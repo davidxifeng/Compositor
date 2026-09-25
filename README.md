@@ -86,6 +86,8 @@ brew install --cask robbietilton-compositor
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 
+For a local arm64 Release app without a signing certificate, run `./build.sh`. It builds an ad hoc signed `build/Compositor.app` for use on the machine that built it. It does not notarize the app.
+
 ## Releasing
 
 `scripts/release.sh` builds a Release version, signs it with Developer ID, notarizes and staples it, and packages it into `dist/Compositor-<version>.dmg`.
