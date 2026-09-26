@@ -41,7 +41,9 @@ final class CanvasView: NSView {
         lastFocusRequest = request
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.attachedSheet == nil else { return }
+            // Text being edited takes the keys back (after the color picker, say), so typing and ⌘Return still reach it.
             if self.session.textDraft == nil { window.makeFirstResponder(self) }
+            else if let editor = self.inlineTextEditor { window.makeFirstResponder(editor.textView) }
         }
     }
     private let sampleRing = SampleRingOverlay()
@@ -97,6 +99,9 @@ final class CanvasView: NSView {
     private var gradientDrag: GradientHandle?
     private var antsTimer: Timer?
     private var modifierMonitor: Any?
+    private var sampleClickMonitor: Any?
+    /// A sampling click taken straight from the event stream, so its drag and release follow it here too.
+    private var sampleClickActive = false
     private var keyMonitor: Any?
     /// Document point where a selection-outline drag began.
     private var selectionDragStart: CGPoint?
@@ -624,7 +629,29 @@ final class CanvasView: NSView {
         syncGeometry()
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor); self.modifierMonitor = nil }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        if let sampleClickMonitor { NSEvent.removeMonitor(sampleClickMonitor); self.sampleClickMonitor = nil }
         guard window != nil else { return }
+        // Sampling the canvas for an open panel (the color picker, Levels, a filter) handles the click here, before
+        // the window sees it: a click would make this window key, and the panel would lose focus and its shadow
+        // would fade until the release gave focus back.
+        sampleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            switch event.type {
+            case .leftMouseDown:
+                guard self.picking, !window.isKeyWindow, NSApp.keyWindow is NSPanel,
+                      let hit = window.contentView?.hitTest(event.locationInWindow), hit.isDescendant(of: self) else { return event }
+                self.sampleClickActive = true
+                self.mouseDown(with: event)
+            case .leftMouseDragged:
+                guard self.sampleClickActive else { return event }
+                self.mouseDragged(with: event)
+            default:
+                guard self.sampleClickActive else { return event }
+                self.sampleClickActive = false
+                self.mouseUp(with: event)
+            }
+            return nil
+        }
         optionHeld = NSEvent.modifierFlags.contains(.option)
         // A tab mounts a new canvas. Restore keyboard focus after SwiftUI finishes
         // installing it, without taking focus from a newly presented dialog.

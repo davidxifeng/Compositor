@@ -420,7 +420,8 @@ extension EditorSession {
     var canAdjustColors: Bool { canAdjust(allowingEmpty: false) }
     private func canAdjust(allowingEmpty: Bool) -> Bool {
         _ = showsBusy
-        guard levels == nil, filterEdit == nil, document != nil, let layer = activeLayer, !isProjectBusy, !isImporting, brushStroke == nil,
+        // Text being edited is drawn by its editor, not the layer, so a filter's preview of it would be wrong: commit it first.
+        guard levels == nil, filterEdit == nil, textDraft == nil, document != nil, let layer = activeLayer, !isProjectBusy, !isImporting, brushStroke == nil,
               pixelMove == nil, renamingLayerID == nil, !showsNewDocument, !showsImporter,
               selectedLayerIDs.count == 1, !layer.isGroup, !isMaskSelected, layer.asset != nil || allowingEmpty,
               document?.effectiveVisibleIDs.contains(layer.id) == true, selection?.isEmpty != true else { return false }

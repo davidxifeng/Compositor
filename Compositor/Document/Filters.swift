@@ -10,6 +10,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     case addNoise = "Add Noise"
     case vignette = "Vignette"
     case bloomGlow = "Bloom / Glow"
+    case dither = "Dither"
     case tonalContrast = "Tonal Contrast"
     case lensCorrection = "Lens Correction"
     case cameraRaw = "Camera Raw Filter"
@@ -75,6 +76,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
     var grain = GrainSettings()
     var blackWhite = BlackWhiteSettings()
     var colorBalance = ColorBalanceSettings()
+    var dither = DitherSettings()
     var cameraRaw = CameraRawSettings()
     /// Remove Background: Basic is the quick subject mask; Advanced refines it (see the three settings below).
     var backgroundQuality: BackgroundQuality = .basic
@@ -113,6 +115,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
         result.exposure = exposure.normalized
         result.gradientMap = gradientMap.normalized
         result.grain = grain.normalized
+        result.dither = dither.normalized
         result.cameraRaw = cameraRaw.normalized
         return result
     }
@@ -192,6 +195,7 @@ nonisolated enum PixelFilter {
                                                                 visualizePointColor: job.visualizesPointColor, sharpenMask: job.showsSharpenMask)
         // Grain sits in layer pixels; the job's seed gives each application its own pattern.
         case .grain: image = try settings.grain.apply(job.image, unitsPerPixel: 1 / job.scale, seed: job.seed)
+        case .dither: image = try settings.dither.apply(job.image)
         case .removeBackground:
             image = try SubjectRemoval.run(job.image, settings: settings)
         case .contentAwareFill:
@@ -417,8 +421,8 @@ final class FilterEdit {
     private static func prepared(kind: FilterKind, from source: CGImage, placed: LayerTransform) throws
         -> (mapping: CGAffineTransform, previewSource: CGImage, previewScale: CGFloat, previewMapping: CGAffineTransform) {
         let mapping = BrushRaster.pixelToDocument(placed, width: source.width, height: source.height)
-        // Noise and grain preview at full size: grain made on a smaller copy would look coarser once enlarged.
-        let factor = [.addNoise, .grain, .contentAwareFill, .removeBackground].contains(kind)
+        // Noise, grain and dither preview at full size: made on a smaller copy they would look coarser once enlarged.
+        let factor = [.addNoise, .grain, .dither, .contentAwareFill, .removeBackground].contains(kind)
             ? 1 : min(1, previewLimit / CGFloat(max(source.width, source.height)))
         guard factor < 1 else { return (mapping, source, 1, mapping) }
         let w = max(1, Int(CGFloat(source.width) * factor)), h = max(1, Int(CGFloat(source.height) * factor))
@@ -561,6 +565,7 @@ extension EditorSession {
         // A filter color still being picked goes with the panel.
         if case .gradientMap = colorPicker?.target { closeColorPicker(commit: false) }
         if case .vignette = colorPicker?.target { closeColorPicker(commit: false) }
+        if case .dither = colorPicker?.target { closeColorPicker(commit: false) }
         if finishAdjustmentEditing(commit: false) { return }
         guard let edit = filterEdit, !edit.committing else { return }
         edit.previewTask?.cancel()
@@ -571,6 +576,7 @@ extension EditorSession {
     func commitFilter() async {
         if case .gradientMap = colorPicker?.target { closeColorPicker(commit: true) }
         if case .vignette = colorPicker?.target { closeColorPicker(commit: true) }
+        if case .dither = colorPicker?.target { closeColorPicker(commit: true) }
         if finishAdjustmentEditing(commit: true) { return }
         guard let edit = filterEdit, !edit.committing else { return }
         if edit.kind.isAutomatic {
