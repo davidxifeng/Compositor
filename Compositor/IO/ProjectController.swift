@@ -68,7 +68,7 @@ final class ProjectController {
             let sheet = NSWindow()
             sheet.styleMask = [.titled, .fullSizeContentView]
             sheet.title = "Canvas Size"
-            sheet.contentViewController = NSHostingController(rootView: CanvasSizeSheet(document: document, foreground: session.foregroundColor, background: session.backgroundColor) { options in
+            sheet.contentViewController = NSHostingController(rootView: CanvasSizeSheet(document: document, session: session) { options in
                 window.endSheet(sheet)
                 sheet.orderOut(nil)
                 sheet.contentViewController = nil
@@ -139,7 +139,7 @@ final class ProjectController {
                 let sheet = NSWindow()
                 sheet.styleMask = [.titled, .fullSizeContentView]
                 sheet.title = "Export JPEG"
-                sheet.contentViewController = NSHostingController(rootView: JPEGExportSheet(raster: raster) { data in
+                sheet.contentViewController = NSHostingController(rootView: JPEGExportSheet(raster: raster, session: session) { data in
                     window.endSheet(sheet)
                     sheet.orderOut(nil)
                     // Release the hosted view and its closure after dismissal.

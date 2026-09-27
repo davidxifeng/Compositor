@@ -2,13 +2,15 @@ import SwiftUI
 
 struct JPEGExportSheet: View {
     let raster: ExportRaster
+    let session: EditorSession
     let finish: (Data?) -> Void
     @State private var options: JPEGOptions
     /// The quality of the last export, which the next one starts from.
     private static let qualityKey = "jpegExportQuality"
 
-    init(raster: ExportRaster, finish: @escaping (Data?) -> Void) {
+    init(raster: ExportRaster, session: EditorSession, finish: @escaping (Data?) -> Void) {
         self.raster = raster
+        self.session = session
         self.finish = finish
         var start = JPEGOptions()
         if let saved = UserDefaults.standard.object(forKey: Self.qualityKey) as? Double, saved.isFinite {
@@ -16,7 +18,6 @@ struct JPEGExportSheet: View {
         }
         _options = State(initialValue: start)
     }
-    @State private var matte = Color.white
     @State private var result: JPEGResult?
     @State private var readyOptions: JPEGOptions?
     @State private var error: String?
@@ -41,13 +42,11 @@ struct JPEGExportSheet: View {
                 Text("\(Int((options.quality * 100).rounded()))%")
                     .monospacedDigit().frame(width: 45, alignment: .trailing)
             }
-            ColorPicker("Background for transparency", selection: $matte, supportsOpacity: false)
-                .onChange(of: matte) { _, color in
-                    guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
-                    options.red = rgb.redComponent
-                    options.green = rgb.greenComponent
-                    options.blue = rgb.blueComponent
-                }
+            HStack(spacing: 8) {
+                Text("Background for transparency")
+                DialogColorSwatch(title: "JPEG Background", color: matte, session: session)
+                    .help("Color that fills transparent areas")
+            }
             Text("\(raster.image.width) × \(raster.image.height) px · sRGB")
                 .foregroundStyle(.secondary)
             HStack {
@@ -57,8 +56,9 @@ struct JPEGExportSheet: View {
                     Text("· encoded preview, fitted to window").foregroundStyle(.secondary)
                 } else { Text("Updating preview…").foregroundStyle(.secondary) }
                 Spacer()
-                Button("Cancel") { finish(nil) }.configuredNativeShortcut(.escape)
+                Button("Cancel") { DialogColorSwatch.closePicker(session); finish(nil) }.configuredNativeShortcut(.escape)
                 Button("Export…") {
+                    DialogColorSwatch.closePicker(session)
                     UserDefaults.standard.set(options.quality, forKey: Self.qualityKey)
                     finish(result?.data)
                 }
@@ -83,5 +83,10 @@ struct JPEGExportSheet: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    private var matte: Binding<PaletteColor> {
+        Binding(get: { PaletteColor(red: options.red, green: options.green, blue: options.blue) },
+                set: { options.red = $0.red; options.green = $0.green; options.blue = $0.blue })
     }
 }

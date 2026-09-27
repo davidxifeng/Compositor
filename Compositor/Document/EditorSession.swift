@@ -265,6 +265,8 @@ final class EditorSession {
     var selectionAmountOperation: SelectionAmountOperation? { didSet { resumeFileRequests() } }
     /// Select > Color Range's panel is open; the selection shown is its preview until OK.
     var colorRange: ColorRangeEdit? { didSet { resumeFileRequests() } }
+    /// The dialog whose color the picker is open on (`ColorPickerTarget.dialog`).
+    @ObservationIgnored var dialogColorChange: ((PaletteColor) -> Void)?
     var selectionFeatherAmount = 2
     var wandSettings = WandSettings()
     var objectSelectionSettings = ObjectSelectionSettings()

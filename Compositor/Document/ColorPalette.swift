@@ -128,6 +128,9 @@ extension EditorSession {
                 setVignetteColor(commit ? colorPicker.color : colorPicker.original)
             case .dither(let light):
                 setDitherColor(commit ? colorPicker.color : colorPicker.original, light: light)
+            case .dialog:
+                dialogColorChange?(commit ? colorPicker.color : colorPicker.original)
+                dialogColorChange = nil
             }
         }
         colorPicker = nil
@@ -169,6 +172,20 @@ extension EditorSession {
     func previewGradientMapColor() {
         guard let colorPicker, case .gradientMap(let highlights) = colorPicker.target else { return }
         setGradientMapColor(colorPicker.color, highlights: highlights)
+    }
+    /// Opens the app's picker on a dialog's color. `change` hears the working color as it moves, the chosen one on OK,
+    /// and the original again on Cancel.
+    func openDialogColorPicker(title: String, color: PaletteColor, change: @escaping (PaletteColor) -> Void) {
+        guard colorPicker == nil else { return }
+        dialogColorChange = change
+        colorPicker = ColorPickerState(target: .dialog(title: title), original: color)
+    }
+    /// The picker is open for a dialog, which covers the canvas: there's nothing to sample.
+    var pickingForDialog: Bool { if case .dialog = colorPicker?.target { true } else { false } }
+    /// While the picker is open on a dialog's color, the dialog follows its working color.
+    func previewDialogColor() {
+        guard let colorPicker, case .dialog = colorPicker.target else { return }
+        dialogColorChange?(colorPicker.color)
     }
     func openDitherColorPicker(light: Bool) {
         guard canEditPalette, colorPicker == nil, let edit = filterEdit, edit.kind == .dither, !edit.committing else { return }
@@ -247,6 +264,8 @@ enum ColorPickerTarget: Equatable {
     /// Dither's Two Colors: the dark one or the light one.
     case dither(light: Bool)
     case text(draftID: UUID?)
+    /// A dialog's own color, such as Export JPEG's background for transparency. The dialog is told as it changes.
+    case dialog(title: String)
     var title: String {
         switch self {
         case .text: return "Color Picker (Text Color)"
@@ -255,6 +274,7 @@ enum ColorPickerTarget: Equatable {
         case .gradientMap(let highlights): return highlights ? "Color Picker (Gradient Map Highlights)" : "Color Picker (Gradient Map Shadows)"
         case .vignette: return "Color Picker (Vignette Color)"
         case .dither(let light): return light ? "Color Picker (Dither Light Color)" : "Color Picker (Dither Dark Color)"
+        case .dialog(let title): return "Color Picker (\(title))"
         }
     }
 }
