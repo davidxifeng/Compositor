@@ -38,11 +38,18 @@ func usage() -> Never {
       set <pkg> --layer <sel> [--name s] [--visible on|off] [--opacity f]
           [--blend m] [--origin x,y] [--size w,h] [--rotation d]
           [--flip-x on|off] [--flip-y on|off] [--sampling s]
-          Change fields; omitted fields are left alone.
+          [--content s] [--font <postscript-name>] [--font-size px] [--color #RRGGBB]
+          [--align left|center|right] [--tracking f] [--leading f] [--box w,h]
+          Change fields; omitted fields are left alone. Text fields re-render a
+          text layer's pixels (--size stays the transform box; unknown options
+          are rejected).
 
       move <pkg> --layer <sel> (--above <sel> | --below <sel> | --top | --bottom
            | --index n) [--parent <sel>|root]
-          Move a layer (a folder carries its subtree) in the stack.
+          Move a layer (a folder carries its subtree) in the stack. Positions
+          are z-order terms, matching the layers listing: --top is the topmost
+          layer, --above <sel> sits directly over <sel>, --index counts from
+          the bottom (0 = bottom).
 
       remove <pkg> --layer <sel>
           Delete a layer; deleting a folder deletes its contents.

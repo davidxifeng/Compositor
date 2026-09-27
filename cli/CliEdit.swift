@@ -181,10 +181,24 @@ enum AdjustmentsCommand {
 // MARK: - set
 
 enum SetCommand {
+    // Text fields (--content/--font/--color/--align/--tracking/--leading/--box/
+    // --font-size) re-render the layer's pixels through the same rasterizer the
+    // `text` command uses; --size stays the transform box, as documented.
+    static let knownFlags: Set<String> = ["layer", "name", "visible", "opacity", "blend",
+                                          "origin", "size", "rotation", "flip-x", "flip-y", "sampling",
+                                          "content", "font", "color", "align", "tracking", "leading",
+                                          "box", "font-size", "json"]
+
     static func run(_ args: [String]) async throws {
         let options = Options(args)
         guard let path = options.list.first, let selector = options.flags["layer"] else {
             FileHandle.standardError.write(Data("set: pass <pkg> --layer <sel> and at least one field\n".utf8))
+            exit(2)
+        }
+        let unknown = Set(options.flags.keys).subtracting(knownFlags)
+        guard unknown.isEmpty else {
+            FileHandle.standardError.write(Data(
+                "set: unknown option(s) --\(unknown.sorted().joined(separator: ", --"))\n".utf8))
             exit(2)
         }
         let url = URL(fileURLWithPath: path)
@@ -201,6 +215,57 @@ enum SetCommand {
                 }
             }
         }
+
+        // Restyling text re-renders its pixels (the PNG is the display and
+        // export fallback, so metadata-only changes would never show).
+        let textFlags = ["content", "font", "color", "align", "tracking", "leading", "box", "font-size"]
+        if textFlags.contains(where: { options.flags[$0] != nil }) {
+            if options.flags["size"] != nil {
+                fail("--size is the transform box; use --box for text wrapping")
+            }
+            guard var style = snapshot.manifest.layers.first(where: { $0.id == id })?.text else {
+                fail("text fields need a text layer (see the `text` command)")
+            }
+            if let content = options.flags["content"], !content.isEmpty { style.content = content }
+            if let fontName = options.flags["font"] { style.fontName = fontName }
+            if let size = options.flags["font-size"], let value = Double(size) { style.fontSize = CGFloat(value) }
+            if let color = options.flags["color"], let rgb = parseHexColor(color) {
+                style.red = rgb.0; style.green = rgb.1; style.blue = rgb.2
+            }
+            if let align = options.flags["align"], let value = TextAlignment(rawValue: align.capitalized) {
+                style.alignment = value
+            }
+            if let tracking = options.flags["tracking"], let value = Double(tracking) { style.tracking = CGFloat(value) }
+            if let leading = options.flags["leading"], let value = Double(leading) { style.leading = CGFloat(value) }
+            if let box = options.flags["box"] {
+                let parts = box.split(separator: ",").compactMap { Double($0) }
+                guard parts.count == 2, parts[0] >= 16, parts[1] >= 16 else {
+                    fail("--box expects <w,h> in pixels (minimum 16)")
+                }
+                style.boxSize = CGSize(width: parts[0], height: parts[1])
+            }
+            guard style.isValid else {
+                fail("text settings are out of range (fontSize 1–2000, tracking −100–1000, leading 0–5000, color 0–1)")
+            }
+            let image = try TextRasterizer.image(style)
+            var images = snapshot.images
+            images[id] = ImportedImage(image: image, thumbnail: image,
+                                       name: snapshot.manifest.layers.first(where: { $0.id == id })?.name ?? "")
+            snapshot = updatingManifest(snapshot) { manifest in
+                manifest.layers = manifest.layers.map { layer in
+                    guard layer.id == id else { return layer }
+                    // The pixels render at the style's natural size unless a
+                    // paragraph box wraps them; the origin stays put.
+                    let pixelSize = style.boxSize ?? CGSize(width: image.width, height: image.height)
+                    let old = layer.transform
+                    return reRecord(layer, transform: LayerTransform(
+                        origin: old.origin, size: pixelSize, rotation: old.rotation,
+                        flipX: old.flipX, flipY: old.flipY, sampling: old.sampling)) { $0.text = style }
+                }
+            }
+            snapshot = ProjectSnapshot(manifest: snapshot.manifest, images: images, masks: snapshot.masks)
+        }
+
         // The transform is immutable on the record, so rebuild it from overrides.
         if options.flags["origin"] != nil || options.flags["size"] != nil || options.flags["rotation"] != nil
             || options.flags["flip-x"] != nil || options.flags["flip-y"] != nil || options.flags["sampling"] != nil {
@@ -255,11 +320,14 @@ enum MoveCommand {
             layers = remaining
         }
 
+        // Position names are z-order terms and the layers listing runs bottom →
+        // top, so --top ends up last in the array and --above inserts after the
+        // anchor. --index counts the same way, 0 = bottom.
         let insertion: Int
         if options.flags["top"] != nil {
-            insertion = 0
-        } else if options.flags["bottom"] != nil {
             insertion = remaining.count
+        } else if options.flags["bottom"] != nil {
+            insertion = 0
         } else if let index = options.flags["index"], let n = Int(index) {
             insertion = max(0, min(remaining.count, n))
         } else if let anchor = options.flags["above"] ?? options.flags["below"] {
@@ -267,7 +335,7 @@ enum MoveCommand {
                   let anchorIndex = remaining.firstIndex(where: { $0.id == anchorID }) else {
                 fail("--above/--below target not found in the remaining stack")
             }
-            insertion = options.flags["above"] != nil ? anchorIndex : anchorIndex + 1
+            insertion = options.flags["above"] != nil ? anchorIndex + 1 : anchorIndex
         } else {
             fail("move needs --above, --below, --top, --bottom or --index")
         }

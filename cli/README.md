@@ -54,11 +54,19 @@ compositor adjustments [kind] [--json]
 compositor set <pkg> --layer <sel> [--name s] [--visible on|off] [--opacity f]
 #              [--blend m] [--origin x,y] [--size w,h] [--rotation d]
 #              [--flip-x on|off] [--flip-y on|off] [--sampling s]
-#   Change fields; omitted fields are left alone.
+#              [--content s] [--font <postscript-name>] [--font-size px]
+#              [--color #RRGGBB] [--align left|center|right] [--tracking f]
+#              [--leading f] [--box w,h]
+#   Change fields; omitted fields are left alone. On a text layer, the text
+#   fields re-render its pixels (same rasterizer as `text`); --size remains
+#   the transform box. Unknown options are rejected.
 
 compositor move <pkg> --layer <sel> (--above <sel> | --below <sel> | --top |
 #               --bottom | --index n) [--parent <sel>|root]
-#   Move a layer; a folder carries its subtree. --parent reparents.
+#   Move a layer; a folder carries its subtree. --parent reparents. Positions
+#   are z-order terms, matching the layers listing: --top is the topmost
+#   layer, --above <sel> sits directly over <sel>, --index counts from the
+#   bottom (0 = bottom).
 
 compositor remove <pkg> --layer <sel>
 #   Delete a layer; a folder's contents go with it.
