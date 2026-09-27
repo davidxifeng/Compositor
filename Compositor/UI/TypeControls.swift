@@ -18,7 +18,18 @@ struct TypeControls: View {
             Text("Type").font(ToolHeaderStyle.titleFont)
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
-                    TypeFontPicker(fontName: value(\.fontName))
+                    TypeFontPicker(fontName: Binding(get: {
+                        guard let draft = session.textDraft else { return session.currentTextStyle.fontName }
+                        let selection = draft.selection
+                        if selection.length == 0 {
+                            return draft.style.fontName(at: max(0, selection.location - 1))
+                        }
+                        // No single face: an empty title, so choosing the first letter's face still applies to the rest.
+                        return draft.style.uniformFontName(in: selection) ?? ""
+                    }, set: { name in
+                        let selection = session.textDraft?.selection ?? NSRange()
+                        session.changeTextStyle { $0.setFont(name, in: selection) }
+                    }))
                         .frame(width: 210).help("Font face, including bold and italic variants")
                     TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52)
                         .unitSuffix("px", scrubValue: value(\.fontSize), sensitivity: 1, range: 1...2000, step: 1)
@@ -93,7 +104,7 @@ private struct TypeFontPicker: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let button = FixedWidthPopUpButton(frame: .zero, pullsDown: false)
-        button.addItem(withTitle: fontName)
+        if !fontName.isEmpty { button.addItem(withTitle: fontName) }
         button.borderShape = .capsule
         // A long font name is cut off at its end rather than widening the control or scrolling its start away.
         button.cell?.lineBreakMode = .byTruncatingTail
@@ -110,9 +121,27 @@ private struct TypeFontPicker: NSViewRepresentable {
     func updateNSView(_ button: NSPopUpButton, context: Context) {
         context.coordinator.fontName = $fontName
         button.isEnabled = isEnabled
-        guard !context.coordinator.tracking, button.titleOfSelectedItem != fontName else { return }
+        guard !context.coordinator.tracking else { return }
+        if fontName.isEmpty { Self.showMultiple(in: button); return }
+        Self.hideMultiple(in: button)
+        guard button.titleOfSelectedItem != fontName else { return }
         if button.item(withTitle: fontName) == nil { button.addItem(withTitle: fontName) }
         button.selectItem(withTitle: fontName)
+    }
+
+    /// Selected letters in more than one face: the menu says so with an item of its own at the top, which isn't a font.
+    private static let multiple = "(Multiple)"
+    private static func isMultiple(_ item: NSMenuItem?) -> Bool { item?.representedObject as? String == multiple }
+    static func showMultiple(in button: NSPopUpButton) {
+        if !isMultiple(button.item(at: 0)) {
+            let item = NSMenuItem(title: multiple, action: nil, keyEquivalent: "")
+            item.representedObject = multiple
+            button.menu?.insertItem(item, at: 0)
+        }
+        if button.indexOfSelectedItem != 0 { button.selectItem(at: 0) }
+    }
+    static func hideMultiple(in button: NSPopUpButton) {
+        if isMultiple(button.item(at: 0)) { button.removeItem(at: 0) }
     }
 
     static func dismantleNSView(_ button: NSPopUpButton, coordinator: Coordinator) {
@@ -139,10 +168,12 @@ private struct TypeFontPicker: NSViewRepresentable {
         func menuNeedsUpdate(_ menu: NSMenu) {
             guard !loaded, let button else { return }
             let selected = fontName.wrappedValue
-            let names = Array(Set(NSFontManager.shared.availableFonts + [selected])).sorted()
+            var names = NSFontManager.shared.availableFonts
+            if !selected.isEmpty, !names.contains(selected) { names.append(selected) }
+            names.sort()
             button.removeAllItems()
             button.addItems(withTitles: names)
-            button.selectItem(withTitle: selected)
+            if selected.isEmpty { TypeFontPicker.showMultiple(in: button) } else { button.selectItem(withTitle: selected) }
             loaded = true
         }
 
@@ -150,7 +181,8 @@ private struct TypeFontPicker: NSViewRepresentable {
         func menuDidClose(_ menu: NSMenu) { tracking = false }
 
         @objc func choose(_ button: NSPopUpButton) {
-            guard let selected = button.titleOfSelectedItem, selected != fontName.wrappedValue else { return }
+            guard !TypeFontPicker.isMultiple(button.selectedItem),
+                  let selected = button.titleOfSelectedItem, selected != fontName.wrappedValue else { return }
             fontName.wrappedValue = selected
         }
     }

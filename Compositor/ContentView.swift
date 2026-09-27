@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var levelsPanel = FloatingPanelController(name: "levelsPanel")
     @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel")
     @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
+    @State private var colorRangePanel = FloatingPanelController(name: "colorRangePanel")
     @State private var filterPanel = FloatingPanelController(name: "filterPanel")
     @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
     @State private var isDropTargeted = false
@@ -202,6 +203,13 @@ struct ContentView: View {
             else {
                 levelsPanel.onClose = { session.cancelLevels() }
                 levelsPanel.show(title: "Levels", content: LevelsSheet(session: session))
+            }
+        }
+        .onChange(of: session.colorRange == nil) { _, closed in
+            if closed { colorRangePanel.close() }
+            else {
+                colorRangePanel.onClose = { session.cancelColorRange() }
+                colorRangePanel.show(title: "Color Range", content: ColorRangeSheet(session: session))
             }
         }
         .onChange(of: session.hueSaturation == nil) { _, closed in

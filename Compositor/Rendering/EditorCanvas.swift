@@ -88,6 +88,7 @@ final class CanvasView: NSView {
     private var palettePicking: Bool { session.tool == .eyedropper || (optionHeld && (session.tool == .brush || session.tool == .spotHealing || session.tool == .gradient) && session.brushStroke == nil && gradientDrag == nil) }
     private var picking: Bool {
         palettePicking || session.colorPicker != nil || session.hueSampleMode != nil || session.levels?.sampleMode != nil
+            || session.colorRange != nil
             || session.filterEdit?.samplesWhiteBalance == true || session.filterEdit?.samplesPointColor == true
             || session.filterEdit?.samplesDefringe == true
             || session.filterEdit?.drawingCameraRawGeometryGuide == true
@@ -100,6 +101,7 @@ final class CanvasView: NSView {
     private var antsTimer: Timer?
     private var modifierMonitor: Any?
     private var sampleClickMonitor: Any?
+    private var cursorUpdateMonitor: Any?
     /// A sampling click taken straight from the event stream, so its drag and release follow it here too.
     private var sampleClickActive = false
     private var keyMonitor: Any?
@@ -416,10 +418,16 @@ final class CanvasView: NSView {
         }
         return NSCursor(image: image, hotSpot: NSPoint(x: 12, y: 12))
     }()
-    private static let eyedropperCursor: NSCursor = {
+    private static let eyedropperCursor = makeEyedropperCursor(badge: nil)
+    /// Color Range's eyedroppers while Shift (add) or Option (take away) is held, or its + or − one is chosen.
+    private static let eyedropperAddCursor = makeEyedropperCursor(badge: "plus")
+    private static let eyedropperRemoveCursor = makeEyedropperCursor(badge: "minus")
+    private static func makeEyedropperCursor(badge: String?) -> NSCursor {
         let symbol = NSImage(systemSymbolName: "eyedropper", accessibilityDescription: "Sample color")!
         let white = symbol.withSymbolConfiguration(.init(paletteColors: [.white]))!
         let black = symbol.withSymbolConfiguration(.init(paletteColors: [.black]))!
+        let mark = badge.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .black).applying(.init(paletteColors: [.black])))
         let image = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { _ in
             let glyph = CGRect(x: 2, y: 2, width: 20, height: 20)
             for step in 0..<16 {
@@ -427,11 +435,43 @@ final class CanvasView: NSView {
                 white.draw(in: glyph.offsetBy(dx: cos(angle) * 1.25, dy: sin(angle) * 1.25))
             }
             black.draw(in: glyph)
+            // The badge sits bottom right, clear of the dropper tip: a black + or − on a white disc with a black rim, so it
+            // reads on any image.
+            if let mark {
+                let spot = CGRect(x: 12.5, y: 0.5, width: 11, height: 11)
+                let disc = NSBezierPath(ovalIn: spot)
+                NSColor.white.setFill(); disc.fill()
+                NSColor.black.setStroke(); disc.lineWidth = 1; disc.stroke()
+                let size = mark.size
+                mark.draw(in: CGRect(x: spot.midX - size.width / 2, y: spot.midY - size.height / 2, width: size.width, height: size.height))
+            }
             return true
         }
         // The dropper tip sits at the glyph's bottom-left.
         return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 21))
-    }()
+    }
+    /// With Color Range's panel focused, anything that rebuilds this view's cursor rects (a new selection redrawn, the
+    /// panel taking the focus back after a click) leaves the arrow up until the pointer moves. Put the eyedropper back
+    /// once that's done.
+    private func keepColorRangeCursor(after delay: TimeInterval = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.session.colorRange != nil, self.pointerOverCanvas else { return }
+            self.pickCursor.set()
+        }
+    }
+    /// The pointer is on the canvas itself, not over a panel floating above it.
+    private var pointerOverCanvas: Bool {
+        guard let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return false }
+        return NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window.windowNumber
+    }
+    /// The eyedropper to show now: Color Range's says whether a click adds or takes away.
+    private var pickCursor: NSCursor {
+        switch session.colorRange?.effectiveMode {
+        case .add: Self.eyedropperAddCursor
+        case .remove: Self.eyedropperRemoveCursor
+        default: Self.eyedropperCursor
+        }
+    }
 
     /// The Zoom tool's cursors: a magnifier with a plus, or a minus while Option is held.
     private static func zoomCursor(out: Bool) -> NSCursor {
@@ -562,8 +602,10 @@ final class CanvasView: NSView {
             // cursor here when picking starts or ends. An empty canvas leaves the form's cursor alone.
             if session.document != nil, let window,
                bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) {
-                if picking { Self.eyedropperCursor.set() } else { restoreToolCursor() }
+                if picking { pickCursor.set() } else { restoreToolCursor() }
             }
+            // Color Range's panel appears, and takes the focus, a moment after it opens.
+            if session.colorRange != nil { keepColorRangeCursor(); keepColorRangeCursor(after: 0.15) }
         }
         if displayedCropRect != transformOverlay.cropViewRect {
             displayedCropRect = transformOverlay.cropViewRect
@@ -630,10 +672,18 @@ final class CanvasView: NSView {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor); self.modifierMonitor = nil }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         if let sampleClickMonitor { NSEvent.removeMonitor(sampleClickMonitor); self.sampleClickMonitor = nil }
+        if let cursorUpdateMonitor { NSEvent.removeMonitor(cursorUpdateMonitor); self.cursorUpdateMonitor = nil }
         guard window != nil else { return }
         // Sampling the canvas for an open panel (the color picker, Levels, a filter) handles the click here, before
         // the window sees it: a click would make this window key, and the panel would lose focus and its shadow
         // would fade until the release gave focus back.
+        // With Color Range's panel focused, the cursor update AppKit sends after Shift or Option changes reaches a view
+        // that answers with the arrow. Over the canvas, answer it here with the eyedropper instead.
+        cursorUpdateMonitor = NSEvent.addLocalMonitorForEvents(matching: .cursorUpdate) { [weak self] event in
+            guard let self, self.session.colorRange != nil, self.pointerOverCanvas else { return event }
+            self.pickCursor.set()
+            return nil
+        }
         sampleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             guard let self, let window = self.window, event.window === window else { return event }
             switch event.type {
@@ -666,6 +716,17 @@ final class CanvasView: NSView {
         modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self else { return event }
             self.optionHeld = event.modifierFlags.contains(.option)
+            // Color Range: Shift adds and Option takes away, shown on the eyedropper and in its panel as they're held.
+            if let edit = self.session.colorRange {
+                let flags = event.modifierFlags
+                let held: HueSampleMode? = flags.contains(.option) ? .remove : flags.contains(.shift) ? .add : nil
+                if edit.held != held {
+                    edit.held = held
+                    // Now, and again once AppKit is done with the key change, in case anything set the arrow meanwhile.
+                    if self.pointerOverCanvas { self.pickCursor.set() }
+                    self.keepColorRangeCursor()
+                }
+            }
             // A Marquee drag reshapes as Shift goes down or up, without waiting for the mouse to move.
             if let pixel = self.marqueeDragPixel, let kind = self.session.lassoDraft?.kind, kind == .rectangle || kind == .ellipse {
                 self.dragMarqueeDraft(to: pixel, flags: event.modifierFlags)
@@ -679,7 +740,9 @@ final class CanvasView: NSView {
             self.updateBrushCursor()
             // Only while the pointer is over the canvas: rebuilding its cursor rects with the pointer somewhere
             // else (the Layers panel, holding Option for a clipping mask) takes that view's cursor away.
-            if self.session.document != nil, let window = self.window,
+            // Not while Color Range is open: its eyedropper covers the whole canvas anyway, and with its panel focused
+            // the rebuild shows the arrow for a moment before the eyedropper comes back.
+            if self.session.document != nil, self.session.colorRange == nil, let window = self.window,
                self.visibleRect.contains(self.convert(window.mouseLocationOutsideOfEventStream, from: nil)) {
                 self.window?.invalidateCursorRects(for: self)
             }
@@ -1307,7 +1370,11 @@ final class CanvasView: NSView {
     override func resetCursorRects() {
         guard session.document != nil else { return }
         if let dragCursor { addCursorRect(bounds, cursor: dragCursor); return }
-        if picking { addCursorRect(bounds, cursor: Self.eyedropperCursor); return }
+        if picking {
+            addCursorRect(bounds, cursor: pickCursor)
+            keepColorRangeCursor()
+            return
+        }
         if session.hueTargeting { addCursorRect(bounds, cursor: .resizeLeftRight); return }
         if session.tool.isSelectionTool, !spaceHeld { addCursorRect(bounds, cursor: lassoCursor); return }
         // Clone Stamp with a source: the brush circle, its preview and the source crosshair stand in
@@ -1444,7 +1511,7 @@ final class CanvasView: NSView {
             session.updateCameraRawReadout(at: session.viewport.documentPoint(from: point, documentSize: document.size))
         }
         optionHeld = event.modifierFlags.contains(.option)
-        if picking { Self.eyedropperCursor.set(); return }
+        if picking { pickCursor.set(); return }
         if session.tool.isSelectionTool {
             // Keys may have changed while the app was in the background.
             session.updateHeldSelectionKeys(shift: event.modifierFlags.contains(.shift), option: event.modifierFlags.contains(.option))
@@ -1456,7 +1523,7 @@ final class CanvasView: NSView {
             return
         }
         // An eyedropper left over from a picker that closed while the pointer was elsewhere, such as over its own panel.
-        if NSCursor.current == Self.eyedropperCursor { restoreToolCursor() }
+        if [Self.eyedropperCursor, Self.eyedropperAddCursor, Self.eyedropperRemoveCursor].contains(NSCursor.current) { restoreToolCursor() }
         brushPointer = convert(event.locationInWindow, from: nil)
         updateBrushCursor()
         if session.tool == .move { updateTransformCursor(at: convert(event.locationInWindow, from: nil), flags: event.modifierFlags) }
@@ -1464,7 +1531,7 @@ final class CanvasView: NSView {
     }
     override func cursorUpdate(with event: NSEvent) {
         guard session.document != nil else { return }
-        if picking { Self.eyedropperCursor.set() }
+        if picking { pickCursor.set() }
         else if session.tool.isSelectionTool, !spaceHeld { lassoCursor.set() }
         // Cursor-update events carry no modifier flags (AppKit sends one after every key change), so read
         // the keys as they are now; the event's flags would undo Option's duplicate cursor straight away.
@@ -1611,6 +1678,13 @@ final class CanvasView: NSView {
             return
         }
         if session.levels != nil, !spaceHeld, session.tool != .hand, session.tool != .zoom { return }
+        if session.colorRange != nil, !spaceHeld, let document = session.document {
+            session.sampleColorRange(at: session.viewport.documentPoint(from: point, documentSize: document.size),
+                                     shift: event.modifierFlags.contains(.shift), option: event.modifierFlags.contains(.option))
+            FloatingPanelController.refocus(NSUserInterfaceItemIdentifier("colorRangePanel"))
+            keepColorRangeCursor()
+            return
+        }
         if picking, !spaceHeld {
             if session.colorPicker != nil || (palettePicking && session.hueSampleMode == nil) {
                 samplingOriginal = session.colorPicker?.color ?? session.foregroundColor

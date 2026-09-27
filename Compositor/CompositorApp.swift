@@ -228,6 +228,8 @@ struct CompositorApp: App {
                     Button("Subject") { Task { await session.selectSubject() } }
                         .configuredKeyboardShortcut("a", modifiers: [.command, .option])
                         .disabled(!session.canSelectSubject)
+                    Button("Color Range…") { session.beginColorRange() }
+                        .disabled(!session.canSelectColorRange)
                     Button("Mask's Black Areas") {
                         if let id = session.activeLayerID { session.loadMaskSelection(layerID: id) }
                     }
