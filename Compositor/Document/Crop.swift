@@ -136,6 +136,30 @@ extension EditorSession {
         return snapped
     }
 
+    /// `point` moved onto the nearest crop target within `tolerance` document pixels, each axis on its own: where a
+    /// Marquee or a shape starts and where its corner is dragged to.
+    func snappedPoint(_ point: CGPoint, tolerance: CGFloat) -> CGPoint {
+        guard snappingEnabled else { snapGuides = ([], []); return point }
+        let targets = cropSnapTargets()
+        func nearest(_ value: CGFloat, in lines: [CGFloat]) -> CGFloat? {
+            lines.filter { abs($0 - value) <= tolerance }.min { abs($0 - value) < abs($1 - value) }
+        }
+        let x = nearest(point.x, in: targets.xs), y = nearest(point.y, in: targets.ys)
+        snapGuides = (x.map { [$0] } ?? [], y.map { [$0] } ?? [])
+        return CGPoint(x: x ?? point.x, y: y ?? point.y)
+    }
+
+    /// A selection being moved by `offset` from where it started, nudged so its edges or middle meet a nearby target
+    /// within `tolerance` document pixels, each axis on its own. An axis Shift has locked doesn't snap.
+    func snappedSelectionOffset(_ offset: CGSize, tolerance: CGFloat, horizontal: Bool = true, vertical: Bool = true) -> CGSize {
+        guard snappingEnabled, let origin = selectionMoveOrigin else { snapGuides = ([], []); return offset }
+        let box = origin.path.boundingBoxOfPath.offsetBy(dx: offset.width.rounded(), dy: offset.height.rounded())
+        let targets = cropSnapTargets()
+        let snap = TransformSnap.offset(for: box, xs: horizontal ? targets.xs : [], ys: vertical ? targets.ys : [], tolerance: tolerance)
+        snapGuides = (snap.x.map { [$0] } ?? [], snap.y.map { [$0] } ?? [])
+        return CGSize(width: offset.width.rounded() + snap.offset.width, height: offset.height.rounded() + snap.offset.height)
+    }
+
     /// What crop edges snap to: View > Snap To targets, without layer/canvas centers.
     func cropSnapTargets() -> (xs: [CGFloat], ys: [CGFloat]) {
         alignmentSnapTargets(includeCenters: false)

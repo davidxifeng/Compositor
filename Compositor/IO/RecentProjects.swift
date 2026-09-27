@@ -12,7 +12,10 @@ final class RecentProjects {
     private init() {
         refresh()
         activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { RecentProjects.shared.refresh() }
+            // A hop rather than `MainActor.assumeIsolated`: the notification handler is a plain C
+            // callback as far as the concurrency runtime is concerned, and asserting the actor there
+            // read freed executor state and crashed the app when a click activated the window.
+            Task { @MainActor in RecentProjects.shared.refresh() }
         }
     }
 

@@ -129,6 +129,34 @@ final class ProjectController {
         } catch { await showError("Couldn’t trim image", error: error) }
     }
 
+    /// View > Grid Settings…: changes only how the grid is drawn and snapped to, so nothing is saved or undone. The
+    /// grid shows while the sheet is open, changing as it's edited, and goes back to how it was on Cancel.
+    func gridSettings() async {
+        guard let window, window.attachedSheet == nil else { return }
+        let original = (grid: session.layoutGrid, appearance: session.gridAppearance, shown: session.showsGrid)
+        session.showsGrid = true
+        let settings: (LayoutGrid, GridAppearance)? = await withCheckedContinuation { continuation in
+            let sheet = NSWindow()
+            sheet.styleMask = [.titled, .fullSizeContentView]
+            sheet.title = "Grid"
+            sheet.contentViewController = NSHostingController(rootView: GridSettingsSheet(
+                session: session, grid: original.grid, appearance: original.appearance,
+                preview: { [session] grid, appearance in
+                    session.layoutGrid = grid
+                    session.gridAppearance = appearance
+                }) { settings in
+                    window.endSheet(sheet)
+                    sheet.orderOut(nil)
+                    sheet.contentViewController = nil
+                    continuation.resume(returning: settings)
+                })
+            window.beginSheet(sheet)
+        }
+        session.showsGrid = original.shown
+        session.layoutGrid = settings?.0 ?? original.grid
+        session.gridAppearance = settings?.1 ?? original.appearance
+    }
+
     func exportJPEG() async {
         guard let window, session.document != nil, begin() else { return }
         defer { session.isProjectBusy = false }
@@ -199,7 +227,8 @@ final class ProjectController {
             externalChanges.saving = true
             defer { externalChanges.saving = false }
             do {
-                try await ProjectStore.shared.save(snapshot, to: destination)
+                let quickLook = await ImageExporter.shared.quickLookImages(snapshot)
+                try await ProjectStore.shared.save(snapshot, to: destination, quickLook: quickLook)
                 session.projectURL = destination
                 session.history.markSaved(revision)
                 saveGeneration += 1

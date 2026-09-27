@@ -81,7 +81,7 @@ actor ProjectStore {
         let version: Int
     }
 
-    func save(_ snapshot: ProjectSnapshot, to url: URL) throws {
+    func save(_ snapshot: ProjectSnapshot, to url: URL, quickLook: QuickLookImages? = nil) throws {
         try validate(snapshot.manifest)
         var images: [String: FileWrapper] = [:]
         var pixels = 0, maskPixels = 0
@@ -109,10 +109,17 @@ actor ProjectStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(snapshot.manifest)
         guard metadata.count <= 4 * 1024 * 1024 else { throw ProjectError.tooLarge }
-        let package = FileWrapper(directoryWithFileWrappers: [
+        var contents = [
             "manifest.json": FileWrapper(regularFileWithContents: metadata),
             "images": FileWrapper(directoryWithFileWrappers: images)
-        ])
+        ]
+        // Quick Look's Space-bar preview reads this by name; loading ignores it.
+        if let quickLook {
+            contents["QuickLook"] = FileWrapper(directoryWithFileWrappers: [
+                "Preview.jpg": FileWrapper(regularFileWithContents: quickLook.preview),
+            ])
+        }
+        let package = FileWrapper(directoryWithFileWrappers: contents)
         var coordinationError: NSError?
         var writeError: Error?
         NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { destination in

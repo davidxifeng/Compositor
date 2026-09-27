@@ -8,6 +8,8 @@ struct EditorCanvas: NSViewRepresentable {
         view.consumeFocusRequest(session.canvasFocusRequest)
         _ = session.showsTransformControls // observed here so ⌘H redraws the transform box at once
         _ = session.showsGrid
+        _ = session.layoutGrid
+        _ = session.gridAppearance
         _ = session.showsGuides
         _ = session.guideDrag
         _ = session.document?.guides
@@ -1735,7 +1737,8 @@ final class CanvasView: NSView {
         } else if session.tool == .type {
             beginTextGesture(at: point, event: event)
         } else if session.tool == .shape, let document = session.document {
-            session.beginShape(at: session.viewport.documentPoint(from: point, documentSize: document.size))
+            session.beginShape(at: snappedCorner(session.viewport.documentPoint(from: point, documentSize: document.size),
+                                                 flags: event.modifierFlags))
         } else if session.tool == .crop {
             beginCropDrag(at: point)
         } else if session.tool == .move {
@@ -1802,7 +1805,8 @@ final class CanvasView: NSView {
         }
         if session.shapeDraft != nil, lastDragPoint == nil, let document = session.document {
             // Unlike the Marquee, Option has no other job here, so it draws from the center as in Photoshop.
-            session.dragShape(to: session.viewport.documentPoint(from: point, documentSize: document.size),
+            session.dragShape(to: snappedCorner(session.viewport.documentPoint(from: point, documentSize: document.size),
+                                                flags: event.modifierFlags),
                               square: event.modifierFlags.contains(.shift), fromCenter: event.modifierFlags.contains(.option))
             synchronizeDisplay()
             return
@@ -2208,8 +2212,15 @@ final class CanvasView: NSView {
         guard let start = selectionDragStart, let document = session.document else { return }
         let pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
         var offset = CGSize(width: pixel.x - start.x, height: pixel.y - start.y)
+        var horizontal = true, vertical = true
         if flags.contains(.shift) {
-            if abs(offset.width) >= abs(offset.height) { offset.height = 0 } else { offset.width = 0 }
+            if abs(offset.width) >= abs(offset.height) { offset.height = 0; vertical = false } else { offset.width = 0; horizontal = false }
+        }
+        // Snaps to View > Snap To targets as a drawn Marquee does, unless Control is held.
+        if flags.contains(.control) { session.snapGuides = ([], []) }
+        else {
+            offset = session.snappedSelectionOffset(offset, tolerance: TransformSnap.distance / max(session.viewport.pointsPerPixel, 0.0001),
+                                                    horizontal: horizontal, vertical: vertical)
         }
         session.moveSelection(by: offset)
     }
@@ -2222,10 +2233,16 @@ final class CanvasView: NSView {
     /// Reshapes the Marquee draft. Option subtracts (chosen at the press), so it never draws from the
     /// center. Shift squares the box — except a Shift already held when the drag began, which chose Add,
     /// until it has been let go and pressed again, as in Photoshop.
+    /// A Marquee or shape corner at `pixel` (document pixels), snapped to View > Snap To targets unless Control is held.
+    private func snappedCorner(_ pixel: CGPoint, flags: NSEvent.ModifierFlags) -> CGPoint {
+        guard !flags.contains(.control) else { session.snapGuides = ([], []); return pixel }
+        return session.snappedPoint(pixel, tolerance: TransformSnap.distance / max(session.viewport.pointsPerPixel, 0.0001))
+    }
+
     private func dragMarqueeDraft(to pixel: CGPoint, flags: NSEvent.ModifierFlags) {
         if !flags.contains(.shift) { marqueeConstrainArmed = true }
         marqueeDragPixel = pixel
-        session.dragMarquee(to: pixel, square: marqueeConstrainArmed && flags.contains(.shift), fromCenter: false)
+        session.dragMarquee(to: snappedCorner(pixel, flags: flags), square: marqueeConstrainArmed && flags.contains(.shift), fromCenter: false)
     }
 
     /// Freehand starts an outline to drag. Polygonal adds a corner per click and closes on
@@ -2261,7 +2278,7 @@ final class CanvasView: NSView {
                 Task { await session.magicWand(at: pixel, mode: mode); synchronizeDisplay(); refreshLassoCursor() }
                 return
             }
-            session.beginLasso(at: pixel, mode: mode)
+            session.beginLasso(at: session.tool == .marquee ? snappedCorner(pixel, flags: event.modifierFlags) : pixel, mode: mode)
             synchronizeDisplay()
             return
         }

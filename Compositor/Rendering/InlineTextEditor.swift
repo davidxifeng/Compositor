@@ -19,6 +19,10 @@ final class CanvasTextView: NSTextView {
     /// Set when the font menu takes the focus, so a collapsed caret does not replace the letters that were selected.
     var holdsSelection = false
     override var undoManager: UndoManager? { textUndo }
+    // Undo and Redo reach the window, whose history isn't this one, so the text answers them itself: ⌘Z takes back
+    // what was typed since the text box opened, in one step, as in Figma.
+    @objc func undo(_ sender: Any?) { if textUndo.canUndo { textUndo.undo() } }
+    @objc func redo(_ sender: Any?) { if textUndo.canRedo { textUndo.redo() } }
     override func resignFirstResponder() -> Bool {
         // The font menu takes the focus and can collapse the highlight. The letters stay selected, so the face
         // applies to them.

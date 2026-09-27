@@ -262,7 +262,8 @@ struct ContentView: View {
         }
         .alert("Import couldn’t finish", isPresented: Binding(
             get: { session.importError != nil }, set: { if !$0 { session.importError = nil } })) {
-                Button("OK", role: .cancel) { session.importError = nil }
+                // No cancel role: an alert with only a cancel button gets a second OK of its own.
+                Button("OK") { session.importError = nil }
             } message: { Text(session.importError ?? "") }
         .alert("Couldn’t paint", isPresented: Binding(get: { session.brushError != nil },
             set: { if !$0 { session.brushError = nil } })) {

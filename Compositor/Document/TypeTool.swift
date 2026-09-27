@@ -360,6 +360,26 @@ extension EditorSession {
 
     var currentTextStyle: LayerTextStyle { textDraft?.style ?? activeLayer?.liveText?.style ?? textDefaults }
 
+    /// While the font menu is open, the text being edited shows the face under the pointer; `endFontPreview` puts it
+    /// back. Only text already being edited: a selected text layer isn't opened for a preview.
+    func previewFont(_ name: String) {
+        guard var draft = textDraft else { return }
+        let original = fontPreviewOriginal ?? draft.style
+        fontPreviewOriginal = original
+        var style = original
+        style.setFont(name, in: draft.selection)
+        guard style.isValid, style != draft.style else { return }
+        draft.style = style
+        textDraft = draft
+    }
+    /// The previewed face was chosen: keep the text as it shows, rather than putting it back and applying it again.
+    func keepFontPreview() { fontPreviewOriginal = nil }
+    func endFontPreview() {
+        guard let original = fontPreviewOriginal else { return }
+        fontPreviewOriginal = nil
+        if var draft = textDraft, draft.style != original { draft.style = original; textDraft = draft }
+    }
+
     func changeTextStyle(_ change: (inout LayerTextStyle) -> Void) {
         if textDraft == nil, activeLayer?.liveText != nil { editActiveText() }
         if var draft = textDraft {
