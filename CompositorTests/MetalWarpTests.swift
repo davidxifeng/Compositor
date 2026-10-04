@@ -22,7 +22,7 @@ import Testing
                                          count: context.bytesPerRow * context.height))
     }
 
-    @Test(arguments: [BlurToolMode.smudge, .liquify])
+    @Test(arguments: [BlurToolMode.smudge])
     func matchesTheCPU(mode: BlurToolMode) throws {
         guard GPUCanvasRenderer.shared != nil else { return }
         let image = try photo()
@@ -48,5 +48,60 @@ import Testing
         }
         // A level here and there: the GPU's square roots round a hair differently.
         #expect(Double(over) / Double(cpu.count) < 0.001 && largest <= 8, "\(mode.rawValue): largest \(largest), \(over) values over 2")
+    }
+
+    /// Liquify keeps pixels sharp: a stroke pushed across and back again leaves the layer much as it was. It moves where
+    /// each pixel is drawn from and samples the untouched layer once; resampled at every dab instead, as the CPU's are,
+    /// the pixels soften with each one.
+    @Test func liquifyStaysSharp() throws {
+        guard GPUCanvasRenderer.shared != nil else { return }
+        let image = try photo()
+        let layer = ImageLayer(asset: ImportedImage(image: image, thumbnail: image, name: "Photo"), origin: .zero)
+        var settings = BrushSettings()
+        settings.diameter = 60
+        settings.hardness = 0.3
+        settings.opacity = 0.7
+        func stroke(gpu: Bool) throws -> [UInt8] {
+            let stroke = try WarpStroke(layer: layer, image: image, transform: layer.transform, canvas: CGSize(width: 300, height: 200),
+                                        mode: .liquify, settings: settings, useGPU: gpu)
+            for x in stride(from: 60.0, through: 200, by: 4) { stroke.append(CGPoint(x: x, y: 100)) }
+            for x in stride(from: 200.0, through: 60, by: -4) { stroke.append(CGPoint(x: x, y: 100)) }
+            return try bytes(try #require(stroke.image))
+        }
+        let untouched = try bytes(image)
+        func change(_ result: [UInt8]) -> Double {
+            Double(zip(result, untouched).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }) / Double(untouched.count)
+        }
+        let gpu = change(try stroke(gpu: true)), cpu = change(try stroke(gpu: false))
+        #expect(gpu < cpu / 2, "the GPU's stroke leaves the layer nearer how it was: \(gpu) against \(cpu)")
+    }
+
+    /// Smudge drags what's under the brush along and softens it, as Photoshop's does: a bright dot smudged sideways
+    /// leaves one trail that fades, not a row of ghost copies of itself.
+    @Test(arguments: [false, true])
+    func smudgeLeavesOneFadingTrail(gpu: Bool) throws {
+        if gpu, GPUCanvasRenderer.shared == nil { return }
+        let context = try BrushRaster.context(width: 300, height: 100, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 300, height: 100))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 52, y: 42, width: 16, height: 16))
+        let image = try #require(context.makeImage())
+        let layer = ImageLayer(asset: ImportedImage(image: image, thumbnail: image, name: "Dot"), origin: .zero)
+        var settings = BrushSettings()
+        settings.diameter = 40
+        settings.hardness = 0.5
+        settings.opacity = 0.6
+        let stroke = try WarpStroke(layer: layer, image: image, transform: layer.transform, canvas: CGSize(width: 300, height: 100),
+                                    mode: .smudge, settings: settings, useGPU: gpu)
+        for x in stride(from: 60.0, through: 240, by: 3) { stroke.append(CGPoint(x: x, y: 50)) }
+        let result = try bytes(try #require(stroke.image))
+        // Brightness along the stroke's line, past the dot.
+        let row = (70..<240).map { Int(result[(50 * 300 + $0) * 4]) }
+        // A ghost is a bump: brighter than a little way either side of it, however faint.
+        var peaks = 0
+        for i in 2..<(row.count - 2) where row[i] > row[i - 2] + 2 && row[i] > row[i + 2] + 2 { peaks += 1 }
+        #expect(peaks == 0, "the trail fades without repeating: \(peaks) ghost peaks along \(row)")
+        #expect(row.first! > row.last! + 20, "and there is a trail: \(row.first!) to \(row.last!)")
     }
 }

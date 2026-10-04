@@ -82,7 +82,10 @@ final class WarpStroke {
             return
         }
         let distance = hypot(point.x - from.x, point.y - from.y)
-        let spacing = max(1, diameter * (mode == .smudge ? 0.08 : 0.025))
+        // Smudge drags the pixels one dab's spacing at a time and mixes them with what's there: spaced widely, each step
+        // left a faint copy of what it dragged, echoes along the stroke. A pixel apart (a little more for a huge brush)
+        // the steps run together into one smear, as Photoshop's does.
+        let spacing = max(1, diameter * (mode == .smudge ? 0.005 : 0.025))
         guard distance >= spacing else { return }
         let steps = Int((distance / spacing).rounded(.up))
         var previous = from
@@ -136,10 +139,13 @@ final class WarpStroke {
                 let p = (y * width + x) * 4, c = ((dy + r) * side + dx + r) * 4
                 for k in 0..<4 {
                     let under = Float(pixels[p + k])
-                    let painted = under + (carried[c + k] - under) * w
+                    // What was under the brush at the last dab, laid down here at the smudge's strength, as Photoshop
+                    // does: all of it drags the pixels along; less mixes them with what's here, softening the trail.
+                    let painted = under + (carried[c + k] - under) * w * keep
                     pixels[p + k] = UInt8(max(0, min(255, painted.rounded())))
-                    // The brush picks up some of what it just left, more the weaker the smudge.
-                    carried[c + k] = painted + (carried[c + k] - painted) * keep
+                    // The brush then carries what it just left, and nothing older: holding on to what it picked up
+                    // at the start stamped it again at every dab, a trail of ghost copies.
+                    carried[c + k] = painted
                 }
             }
         }
@@ -225,7 +231,15 @@ extension EditorSession {
             stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
             stroke.replacesWithClone = true
             stroke.editName = warp.mode.rawValue
-            for point in warp.points { try stroke.append(point) }
+            // The tip is solid and a little wider than the brush, so a point every twentieth of its width covers what
+            // every dab did: a big brush on a big canvas lays thousands of dabs, and replaying each one stalled the release.
+            let spacing = max(1, warp.diameter * 0.05)
+            var kept: CGPoint?
+            for (index, point) in warp.points.enumerated() {
+                if let kept, index < warp.points.count - 1, hypot(point.x - kept.x, point.y - kept.y) < spacing { continue }
+                try stroke.append(point)
+                kept = point
+            }
             try stroke.flush()
             if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
         } catch { brushError = error.localizedDescription }

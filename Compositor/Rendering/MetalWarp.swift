@@ -12,7 +12,13 @@ import Metal
     private let renderer: GPUCanvasRenderer
     /// Smudge: the color the brush carries, a (2r+1)² square, in 0…255.
     private var carried: MTLTexture?
-    /// Liquify: the dab's area as it was before the dab, which the dab samples from.
+    /// Liquify: the layer as the stroke found it, and how far each pixel has moved from it — a source offset per
+    /// pixel, in pixels. Each dab moves the offsets, never the pixels, and a pixel is drawn afresh from the untouched
+    /// ones through its offset; resampled at every dab instead, as the pixels themselves were, they softened a little
+    /// each time, where Photoshop's Liquify keeps them sharp.
+    private var original: MTLTexture?
+    private var offsets: MTLTexture?
+    /// Liquify: the offsets in the dab's area as they were before the dab, which the dab reads.
     private var scratch: MTLTexture?
     private var buffer: MTLCommandBuffer?
     private var encoder: MTLComputeCommandEncoder?
@@ -111,6 +117,8 @@ import Metal
                  textures: [texture, carried], threads: 2 * radius + 1)
     }
 
+    /// Forward warp, as `WarpStroke.push`: what's under the brush moves with it, most at its center, fading to none at its
+    /// rim — worked on the offsets (see `offsets`), with the pixels under the dab drawn again from the untouched ones.
     func push(from a: CGPoint, to b: CGPoint, radius r: Int, diameter: CGFloat, hardness: CGFloat, strength: CGFloat) {
         let move = SIMD2<Float>(Float(b.x - a.x), Float(b.y - a.y)) * Float(strength)
         let margin = Int(ceil(max(abs(move.x), abs(move.y)))) + 2
@@ -119,20 +127,38 @@ import Metal
         let y0 = max(0, cy - r - margin), y1 = min(height - 1, cy + r + margin)
         guard x0 <= x1, y0 <= y1 else { return }
         let cw = x1 - x0 + 1, ch = y1 - y0 + 1
-        guard let scratch = texture(scratch, side: max(cw, ch), format: .rgba8Unorm) else { return }
+        let whole = Dab(center: .zero, radius: 0, size: SIMD2(Int32(width), Int32(height)), origin: .zero,
+                        area: SIMD2(Int32(width), Int32(height)), inverseRadius: 0, hardness: 0, keep: 0, move: .zero)
+        // The first push keeps the layer as it is, and starts every offset at nothing.
+        if original == nil {
+            guard let original = sized(width: width, height: height, format: .rgba8Unorm),
+                  let offsets = sized(width: width, height: height, format: .rg32Float) else { return }
+            self.original = original
+            self.offsets = offsets
+            dispatch("warp_copy", whole, textures: [texture, original], threads: max(width, height))
+            dispatch("warp_clear", whole, textures: [offsets], threads: max(width, height))
+        }
+        guard let original, let offsets, let scratch = texture(scratch, side: max(cw, ch), format: .rg32Float) else { return }
         self.scratch = scratch
         let dab = Dab(center: SIMD2(Int32(cx), Int32(cy)), radius: Int32(r), size: SIMD2(Int32(width), Int32(height)),
                       origin: SIMD2(Int32(x0), Int32(y0)), area: SIMD2(Int32(cw), Int32(ch)),
                       inverseRadius: 1 / Float(diameter / 2), hardness: Float(hardness), keep: 0, move: move)
-        dispatch("warp_copy", dab, textures: [texture, scratch], threads: max(cw, ch))
-        dispatch("warp_push", dab, textures: [texture, scratch], threads: 2 * r + 1)
+        dispatch("warp_copy", dab, textures: [offsets, scratch], threads: max(cw, ch))
+        dispatch("warp_push", dab, textures: [offsets, scratch, original, texture], threads: 2 * r + 1)
+    }
+
+    private func sized(width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+        return renderer.device.makeTexture(descriptor: descriptor)
     }
 
     static let pipelines: [String: MTLComputePipelineState]? = {
         guard let device = MTLCreateSystemDefaultDevice(), let library = try? device.makeLibrary(source: source, options: nil)
         else { return nil }
         var result: [String: MTLComputePipelineState] = [:]
-        for name in ["warp_pick_up", "warp_smudge", "warp_copy", "warp_push"] {
+        for name in ["warp_pick_up", "warp_smudge", "warp_copy", "warp_clear", "warp_push"] {
             guard let function = library.makeFunction(name: name),
                   let pipeline = try? device.makeComputePipelineState(function: function) else { return nil }
             result[name] = pipeline
@@ -177,22 +203,33 @@ import Metal
         float w = weight(sqrt(float(offset.x * offset.x + offset.y * offset.y)) * d.inverseRadius, d.hardness);
         if (w <= 0.0f) return;
         float4 under = canvas.read(uint2(p)) * 255.0f, held = carried.read(gid);
-        float4 painted = under + (held - under) * w;
+        // What was under the brush at the last dab, laid down here at the smudge's strength; the brush then carries
+        // what it just left, and nothing older (see WarpStroke.smudge).
+        float4 painted = under + (held - under) * w * d.keep;
         canvas.write(clamp(round(painted), 0.0f, 255.0f) / 255.0f, uint2(p));
-        // The brush picks up some of what it just left, more the weaker the smudge.
-        carried.write(painted + (held - painted) * d.keep, gid);
+        carried.write(painted, gid);
     }
 
-    kernel void warp_copy(texture2d<float, access::read> canvas [[texture(0)]],
-                          texture2d<float, access::write> scratch [[texture(1)]],
+    kernel void warp_copy(texture2d<float, access::read> from [[texture(0)]],
+                          texture2d<float, access::write> to [[texture(1)]],
                           constant Dab &d [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {
         if (int(gid.x) >= d.area.x || int(gid.y) >= d.area.y) return;
-        scratch.write(canvas.read(uint2(d.origin + int2(gid))), gid);
+        to.write(from.read(uint2(d.origin + int2(gid))), gid);
     }
 
-    // Forward warp: pixels under the brush move with it, most at its center, fading to none at its rim.
-    kernel void warp_push(texture2d<float, access::write> canvas [[texture(0)]],
-                          texture2d<float, access::read> scratch [[texture(1)]],
+    kernel void warp_clear(texture2d<float, access::write> to [[texture(0)]],
+                           constant Dab &d [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {
+        if (int(gid.x) >= d.area.x || int(gid.y) >= d.area.y) return;
+        to.write(float4(0.0f), gid);
+    }
+
+    // Forward warp: what's under the brush moves with it, most at its center, fading to none at its rim. The offset
+    // a pixel takes is the one found behind the brush's travel, less the travel; its color is the untouched layer's,
+    // there, sampled once.
+    kernel void warp_push(texture2d<float, access::write> offsets [[texture(0)]],
+                          texture2d<float, access::read> before [[texture(1)]],
+                          texture2d<float, access::read> original [[texture(2)]],
+                          texture2d<float, access::write> canvas [[texture(3)]],
                           constant Dab &d [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {
         int side = 2 * d.radius + 1;
         if (int(gid.x) >= side || int(gid.y) >= side) return;
@@ -201,16 +238,24 @@ import Metal
         if (p.x < d.origin.x || p.y < d.origin.y || p.x > last.x || p.y > last.y) return;
         float w = weight(sqrt(float(offset.x * offset.x + offset.y * offset.y)) * d.inverseRadius, d.hardness);
         if (w <= 0.0f) return;
-        // Bilinear sample of the old pixels, from behind the brush's travel.
+        // Bilinear sample of the offsets as they were, from behind the brush's travel.
         float sx = min(float(d.area.x - 1), max(0.0f, float(p.x - d.origin.x) - d.move.x * w));
         float sy = min(float(d.area.y - 1), max(0.0f, float(p.y - d.origin.y) - d.move.y * w));
         int ix = min(d.area.x - 2, int(sx)), iy = min(d.area.y - 2, int(sy));
         if (ix < 0 || iy < 0) return;
         float fx = sx - float(ix), fy = sy - float(iy);
-        float4 s00 = scratch.read(uint2(ix, iy)) * 255.0f, s10 = scratch.read(uint2(ix + 1, iy)) * 255.0f;
-        float4 s01 = scratch.read(uint2(ix, iy + 1)) * 255.0f, s11 = scratch.read(uint2(ix + 1, iy + 1)) * 255.0f;
-        float4 top = s00 + (s10 - s00) * fx, bottom = s01 + (s11 - s01) * fx;
-        canvas.write(clamp(round(top + (bottom - top) * fy), 0.0f, 255.0f) / 255.0f, uint2(p));
+        float2 o00 = before.read(uint2(ix, iy)).xy, o10 = before.read(uint2(ix + 1, iy)).xy;
+        float2 o01 = before.read(uint2(ix, iy + 1)).xy, o11 = before.read(uint2(ix + 1, iy + 1)).xy;
+        float2 moved = mix(mix(o00, o10, fx), mix(o01, o11, fx), fy) - d.move * w;
+        offsets.write(float4(moved, 0.0f, 0.0f), uint2(p));
+        // The untouched layer where that offset points, held to its edges.
+        float2 source = clamp(float2(p) + moved, float2(0.0f), float2(d.size - 1));
+        int2 i = min(int2(source), d.size - 2);
+        float2 f = source - float2(i);
+        float4 c00 = original.read(uint2(i)), c10 = original.read(uint2(i + int2(1, 0)));
+        float4 c01 = original.read(uint2(i + int2(0, 1))), c11 = original.read(uint2(i + int2(1, 1)));
+        float4 color = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+        canvas.write(clamp(round(color * 255.0f), 0.0f, 255.0f) / 255.0f, uint2(p));
     }
     """
 }
